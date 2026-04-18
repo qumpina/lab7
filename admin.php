@@ -1,57 +1,42 @@
 <?php
-// admin.php - Панель администратора с HTTP-авторизацией
 require_once 'config.php';
 
-// HTTP-авторизация (простая версия, как в test_auth.php)
+// HTTP-авторизация
 if (empty($_SERVER['PHP_AUTH_USER']) || 
     empty($_SERVER['PHP_AUTH_PW']) || 
     $_SERVER['PHP_AUTH_USER'] != 'admin' || 
     $_SERVER['PHP_AUTH_PW'] != 'admin123') {
     
     header('HTTP/1.1 401 Unauthorized');
-    header('WWW-Authenticate: Basic realm="Admin Panel - Lab6"');
-    echo '<!DOCTYPE html>
-    <html>
-    <head><title>401 Требуется авторизация</title>
-    <style>
-        body { font-family: Arial; text-align: center; padding: 50px; background: #f5f5f5; }
-        .error { background: #fee; color: #c33; padding: 20px; border-radius: 8px; display: inline-block; }
-    </style>
-    </head>
-    <body>
-        <div class="error">
-            <h1>401 Требуется авторизация</h1>
-            <p>Логин: <strong>admin</strong></p>
-            <p>Пароль: <strong>admin123</strong></p>
-        </div>
-    </body>
-    </html>';
+    header('WWW-Authenticate: Basic realm="Admin Panel"');
+    echo '<h1>401 Требуется авторизация</h1>';
     exit();
 }
 
-// Если дошли сюда - авторизация успешна
-// echo "Авторизация успешна!<br>"; // можно раскомментировать для проверки
-
-// Обработка действий
 $message = '';
 $error = '';
 
-// Удаление записи
+// CSRF защита для удаления
 if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
-    $id = (int)$_GET['delete'];
-    try {
-        $stmt = $pdo->prepare("DELETE FROM application WHERE id = ?");
-        $stmt->execute([$id]);
-        $message = "Запись #$id успешно удалена";
-    } catch (PDOException $e) {
-        $error = "Ошибка при удалении: " . $e->getMessage();
+    if (!isset($_GET['csrf_token']) || !verifyCsrfToken($_GET['csrf_token'])) {
+        $error = "CSRF token validation failed";
+    } else {
+        $id = (int)$_GET['delete'];
+        try {
+            $stmt = $pdo->prepare("DELETE FROM application WHERE id = ?");
+            $stmt->execute([$id]);
+            $message = "Запись #$id успешно удалена";
+        } catch (PDOException $e) {
+            error_log('Delete error: ' . $e->getMessage());
+            $error = "Ошибка при удалении";
+        }
     }
 }
 
-// Получение всех заявок
 $applications = getAllApplications($pdo);
 $total_count = count($applications);
 $language_stats = getLanguageStats($pdo);
+$csrf_token = generateCsrfToken();
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -281,92 +266,65 @@ $language_stats = getLanguageStats($pdo);
     <div class="container">
         <div class="header">
             <h1>👑 Панель администратора</h1>
-            <div class="admin-info">
-                Вы вошли как: <strong><?php echo htmlspecialchars($_SERVER['PHP_AUTH_USER']); ?></strong>
-            </div>
+            <div>Вы вошли как: <strong><?php echo h($_SERVER['PHP_AUTH_USER']); ?></strong></div>
         </div>
         
         <?php if ($message): ?>
-            <div class="message"><?php echo htmlspecialchars($message); ?></div>
-        <?php endif; ?>
-        
-        <?php if ($error): ?>
-            <div class="error"><?php echo htmlspecialchars($error); ?></div>
+            <div class="message"><?php echo h($message); ?></div>
         <?php endif; ?>
         
         <!-- Статистика -->
         <div class="stats-container">
-            <h2>📊 Статистика по языкам программирования</h2>
+            <h2>📊 Статистика по языкам</h2>
             <div class="stats-grid">
                 <?php foreach ($language_stats as $stat): ?>
                     <div class="stat-card">
-                        <div class="lang-name"><?php echo htmlspecialchars($stat['name']); ?></div>
+                        <div class="lang-name"><?php echo h($stat['name']); ?></div>
                         <div class="lang-count"><?php echo $stat['count']; ?></div>
-                        <div style="font-size: 12px; opacity: 0.8;">пользователей</div>
                     </div>
                 <?php endforeach; ?>
                 <div class="stat-card total-card">
                     <div class="lang-name">📋 Всего</div>
                     <div class="lang-count"><?php echo $total_count; ?></div>
-                    <div style="font-size: 12px; opacity: 0.8;">заявок</div>
                 </div>
             </div>
         </div>
         
-        <!-- Таблица с данными -->
+        <!-- Таблица -->
         <div class="table-container">
             <table>
                 <thead>
                     <tr>
-                        <th>ID</th>
-                        <th>ФИО</th>
-                        <th>Телефон</th>
-                        <th>Email</th>
-                        <th>Дата рождения</th>
-                        <th>Пол</th>
-                        <th>Языки программирования</th>
-                        <th>Дата создания</th>
-                        <th>Действия</th>
+                        <th>ID</th><th>ФИО</th><th>Телефон</th><th>Email</th>
+                        <th>Дата рождения</th><th>Пол</th><th>Языки</th>
+                        <th>Дата создания</th><th>Действия</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php if (empty($applications)): ?>
-                        <tr class="empty-row">
-                            <td colspan="9">Нет данных для отображения</td>
+                    <?php foreach ($applications as $app): ?>
+                        <?php $user_langs = getUserLanguages($pdo, $app['id']); ?>
+                        <tr>
+                            <td><?php echo $app['id']; ?></td>
+                            <td><?php echo h($app['full_name']); ?></td>
+                            <td><?php echo h($app['phone']); ?></td>
+                            <td><?php echo h($app['email']); ?></td>
+                            <td><?php echo date('d.m.Y', strtotime($app['birth_date'])); ?></td>
+                            <td><?php echo ['male' => 'Мужской', 'female' => 'Женский'][$app['gender']]; ?></td>
+                            <td>
+                                <?php foreach ($user_langs as $lang): ?>
+                                    <span class="badge"><?php echo h($lang); ?></span>
+                                <?php endforeach; ?>
+                            </td>
+                            <td><?php echo date('d.m.Y H:i', strtotime($app['created_at'])); ?></td>
+                            <td>
+                                <a href="admin_edit.php?id=<?php echo $app['id']; ?>&csrf_token=<?php echo $csrf_token; ?>" class="btn btn-edit">✏️</a>
+                                <a href="?delete=<?php echo $app['id']; ?>&csrf_token=<?php echo $csrf_token; ?>" class="btn btn-delete" onclick="return confirm('Удалить?')">🗑️</a>
+                            </td>
                         </tr>
-                    <?php else: ?>
-                        <?php foreach ($applications as $app): ?>
-                            <?php $user_langs = getUserLanguages($pdo, $app['id']); ?>
-                            <tr>
-                                <td><?php echo $app['id']; ?></td>
-                                <td><?php echo htmlspecialchars($app['full_name']); ?></td>
-                                <td><?php echo htmlspecialchars($app['phone']); ?></td>
-                                <td><?php echo htmlspecialchars($app['email']); ?></td>
-                                <td><?php echo date('d.m.Y', strtotime($app['birth_date'])); ?></td>
-                                <td>
-                                    <?php 
-                                    $genders = ['male' => 'Мужской', 'female' => 'Женский', 'other' => 'Другой'];
-                                    echo $genders[$app['gender']] ?? $app['gender'];
-                                    ?>
-                                </td>
-                                <td>
-                                    <?php foreach ($user_langs as $lang): ?>
-                                        <span class="badge"><?php echo htmlspecialchars($lang); ?></span>
-                                    <?php endforeach; ?>
-                                </td>
-                                <td><?php echo date('d.m.Y H:i', strtotime($app['created_at'])); ?></td>
-                                <td class="actions">
-                                    <a href="admin_edit.php?id=<?php echo $app['id']; ?>" class="btn btn-edit">✏️ Редактировать</a>
-                                    <a href="?delete=<?php echo $app['id']; ?>" class="btn btn-delete" onclick="return confirm('Удалить запись #<?php echo $app['id']; ?>?')">🗑️ Удалить</a>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
+                    <?php endforeach; ?>
                 </tbody>
             </table>
         </div>
-        
-        <a href="index.php" class="back-link">← Вернуться на главную</a>
     </div>
 </body>
 </html>

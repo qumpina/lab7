@@ -1,5 +1,40 @@
 <?php
-// config.php
+// config.php - с защитой от уязвимостей
+
+// Отключение display errors
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/logs/php_errors.log');
+
+// Скрываем версию PHP
+header('X-Powered-By: unknown');
+
+// Сессия
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// Функция для безопасного вывода (XSS защита)
+function h($string) {
+    return htmlspecialchars($string, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+}
+
+// CSRF защита
+function generateCsrfToken() {
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+function verifyCsrfToken($token) {
+    if (!isset($_SESSION['csrf_token']) || $token !== $_SESSION['csrf_token']) {
+        return false;
+    }
+    return true;
+}
+
+// Конфигурация БД
 define('DB_HOST', 'localhost');
 define('DB_USER', 'u82092');
 define('DB_PASS', '1557612');
@@ -17,58 +52,16 @@ try {
         ]
     );
 } catch(PDOException $e) {
-    die("Ошибка подключения к БД: " . $e->getMessage());
+    error_log('DB Error: ' . $e->getMessage());
+    die("Ошибка подключения к базе данных. Пожалуйста, попробуйте позже.");
 }
 
-// Функция для генерации логина
-function generateLogin($full_name) {
-    $clean_name = preg_replace('/[^a-zA-Z]/', '', $full_name);
-    if (strlen($clean_name) < 4) {
-        $clean_name = 'user';
-    }
-    $login = substr($clean_name, 0, 4);
-    $login .= rand(100, 999);
-    return strtolower($login);
-}
-
-// Функция для генерации пароля
-function generatePassword($length = 10) {
-    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-    $password = '';
-    $max = strlen($chars) - 1;
-    for ($i = 0; $i < $length; $i++) {
-        $password .= $chars[random_int(0, $max)];
-    }
-    return $password;
-}
-
-// Функция для получения всех языков
-function getAllLanguages($pdo) {
-    $stmt = $pdo->query("SELECT id, name FROM programming_languages ORDER BY name");
-    return $stmt->fetchAll();
-}
-
-// Функция для получения языков пользователя
-function getUserLanguages($pdo, $application_id) {
-    $stmt = $pdo->prepare("
-        SELECT pl.name FROM application_languages al
-        JOIN programming_languages pl ON al.language_id = pl.id
-        WHERE al.application_id = ?
-    ");
-    $stmt->execute([$application_id]);
-    return $stmt->fetchAll(PDO::FETCH_COLUMN);
-}
-
-// Функция для получения всех заявок
+// Функции работы с БД (используют подготовленные запросы)
 function getAllApplications($pdo) {
-    $stmt = $pdo->query("
-        SELECT a.* FROM application a 
-        ORDER BY a.created_at DESC
-    ");
+    $stmt = $pdo->query("SELECT a.* FROM application a ORDER BY a.created_at DESC");
     return $stmt->fetchAll();
 }
 
-// Функция для статистики по языкам
 function getLanguageStats($pdo) {
     $stmt = $pdo->query("
         SELECT pl.name, COUNT(al.language_id) as count
@@ -80,47 +73,34 @@ function getLanguageStats($pdo) {
     return $stmt->fetchAll();
 }
 
-// Функция для проверки администратора
-function checkAdminAuth($pdo) {
-    if (empty($_SERVER['PHP_AUTH_USER']) || empty($_SERVER['PHP_AUTH_PW'])) {
-        return false;
-    }
-    
-    $login = $_SERVER['PHP_AUTH_USER'];
-    $password = $_SERVER['PHP_AUTH_PW'];
-    
-    $stmt = $pdo->prepare("SELECT password_hash FROM admin_users WHERE login = ?");
-    $stmt->execute([$login]);
-    $admin = $stmt->fetch();
-    
-    if ($admin && password_verify($password, $admin['password_hash'])) {
-        return true;
-    }
-    return false;
+function getUserLanguages($pdo, $application_id) {
+    $stmt = $pdo->prepare("
+        SELECT pl.name FROM application_languages al
+        JOIN programming_languages pl ON al.language_id = pl.id
+        WHERE al.application_id = ?
+    ");
+    $stmt->execute([$application_id]);
+    return $stmt->fetchAll(PDO::FETCH_COLUMN);
 }
 
-// Функция для HTTP-аутентификации
-function authenticateAdmin($pdo) {
-    if (!checkAdminAuth($pdo)) {
-        header('HTTP/1.1 401 Unauthorized');
-        header('WWW-Authenticate: Basic realm="Admin Panel - Lab6"');
-        echo '<!DOCTYPE html>
-        <html>
-        <head><title>401 Требуется авторизация</title>
-        <style>
-            body { font-family: Arial; text-align: center; padding: 50px; background: #f5f5f5; }
-            .error { background: #fee; color: #c33; padding: 20px; border-radius: 8px; display: inline-block; }
-        </style>
-        </head>
-        <body>
-            <div class="error">
-                <h1>401 Требуется авторизация</h1>
-                <p>Доступ разрешен только администраторам</p>
-                <p>Используйте логин и пароль администратора</p>
-            </div>
-        </body>
-        </html>';
-        exit();
+// Генерация логина и пароля
+function generateLogin($full_name) {
+    $clean_name = preg_replace('/[^a-zA-Z]/', '', $full_name);
+    if (strlen($clean_name) < 4) {
+        $clean_name = 'user';
     }
+    $login = substr($clean_name, 0, 4);
+    $login .= rand(100, 999);
+    return strtolower($login);
+}
+
+function generatePassword($length = 10) {
+    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+    $password = '';
+    $max = strlen($chars) - 1;
+    for ($i = 0; $i < $length; $i++) {
+        $password .= $chars[random_int(0, $max)];
+    }
+    return $password;
 }
 ?>

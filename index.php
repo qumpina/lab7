@@ -3,6 +3,18 @@
 session_start();
 require_once 'config.php';
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Проверка CSRF токена
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        die('Ошибка безопасности. Пожалуйста, обновите страницу и попробуйте снова.');
+    }
+    
+    // Валидация и сохранение данных...
+}
+
+// Форма с CSRF токеном
+$csrf_token = generateCsrfToken();
+
 // Функция для установки Cookie на год
 function setUserDataCookie($data) {
     foreach ($data as $key => $value) {
@@ -273,6 +285,7 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
     <form id="user-form" method="POST" action="index.php">
         <!-- ФИО -->
         <div class="form-group <?php echo isset($form_errors['full_name']) ? 'has-error' : ''; ?>">
+            <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
             <label for="fio" class="required">ФИО:</label>
             <input type="text" 
                    placeholder="Иванов Иван Иванович" 

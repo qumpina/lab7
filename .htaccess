@@ -1,0 +1,28 @@
+# Отключение вывода ошибок
+php_flag display_errors off
+php_flag log_errors on
+
+# Защита конфигурационных файлов
+<Files "config.php">
+    Order Deny,Allow
+    Deny from all
+</Files>
+
+<Files "*.log">
+    Order Deny,Allow
+    Deny from all
+</Files>
+
+# Защита от directory listing
+Options -Indexes
+
+# Установка кодировки
+AddDefaultCharset UTF-8
+
+# XSS защита через заголовки
+<IfModule mod_headers.c>
+    Header set X-XSS-Protection "1; mode=block"
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "DENY"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
