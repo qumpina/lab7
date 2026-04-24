@@ -5,10 +5,15 @@ require_once 'config.php';
 // Проверка HTTP-авторизации
 authenticateAdmin($pdo);
 
-$id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
-if (!$id) {
-    header('Location: admin.php');
-    exit;
+if (empty($_SERVER['PHP_AUTH_USER']) || 
+    empty($_SERVER['PHP_AUTH_PW']) || 
+    $_SERVER['PHP_AUTH_USER'] != 'admin' || 
+    $_SERVER['PHP_AUTH_PW'] != 'admin123') {
+    
+    header('HTTP/1.1 401 Unauthorized');
+    header('WWW-Authenticate: Basic realm="Admin Panel"');
+    echo '<h1>401 Требуется авторизация</h1>';
+    exit();
 }
 
 // Получение данных заявки
