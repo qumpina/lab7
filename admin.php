@@ -1,49 +1,146 @@
 <?php
+// admin.php - Панель администратора
 require_once 'config.php';
 
-// HTTP-авторизация
-if (empty($_SERVER['PHP_AUTH_USER']) || 
-    empty($_SERVER['PHP_AUTH_PW']) || 
-    $_SERVER['PHP_AUTH_USER'] != 'admin' || 
-    $_SERVER['PHP_AUTH_PW'] != 'admin123') {
-    
+// Установка защитных заголовков
+setSecurityHeaders();
+
+// ========== HTTP BASIC AUTHENTICATION (прямая проверка) ==========
+// Временно используем статическую проверку, пока не настроена БД
+$valid_admin_login = 'admin';
+$valid_admin_password = 'admin123';
+
+// Получаем данные авторизации
+$auth_user = $_SERVER['PHP_AUTH_USER'] ?? '';
+$auth_pass = $_SERVER['PHP_AUTH_PW'] ?? '';
+
+// Проверка авторизации
+if (empty($auth_user) || empty($auth_pass) || $auth_user !== $valid_admin_login || $auth_pass !== $valid_admin_password) {
+    // Отправляем заголовки для HTTP авторизации
     header('HTTP/1.1 401 Unauthorized');
-    header('WWW-Authenticate: Basic realm="Admin Panel"');
-    echo '<h1>401 Требуется авторизация</h1>';
+    header('WWW-Authenticate: Basic realm="Admin Panel - Lab7"');
+    
+    // Показываем форму авторизации (если браузер не показывает свою)
+    echo '<!DOCTYPE html>
+    <html>
+    <head>
+        <title>401 Требуется авторизация</title>
+        <meta charset="UTF-8">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                margin: 0;
+                padding: 20px;
+            }
+            .auth-box {
+                background: white;
+                padding: 40px;
+                border-radius: 15px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                text-align: center;
+                max-width: 400px;
+            }
+            .auth-box h1 {
+                color: #333;
+                margin-bottom: 20px;
+            }
+            .auth-box p {
+                color: #666;
+                margin-bottom: 20px;
+            }
+            .auth-box .credentials {
+                background: #f8f9fa;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 20px 0;
+            }
+            .auth-box code {
+                background: #e9ecef;
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-family: monospace;
+            }
+            .retry-btn {
+                display: inline-block;
+                padding: 12px 24px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                text-decoration: none;
+                border-radius: 8px;
+                margin-top: 10px;
+            }
+            .retry-btn:hover {
+                transform: translateY(-2px);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="auth-box">
+            <h1>🔐 Требуется авторизация</h1>
+            <p>Для доступа к панели администратора необходимо ввести логин и пароль.</p>
+            <div class="credentials">
+                <p><strong>Учетные данные:</strong></p>
+                <p>Логин: <code>admin</code></p>
+                <p>Пароль: <code>admin123</code></p>
+            </div>
+            <a href="admin.php" class="retry-btn">🔄 Попробовать снова</a>
+            <p style="margin-top: 20px; font-size: 12px; color: #999;">
+                Если окно входа не появилось, проверьте настройки браузера.
+            </p>
+        </div>
+    </body>
+    </html>';
     exit();
 }
 
+// Если дошли сюда - авторизация успешна
+// Обработка действий
 $message = '';
 $error = '';
 
-// CSRF защита для удаления
-if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
-    if (!isset($_GET['csrf_token']) || !verifyCsrfToken($_GET['csrf_token'])) {
-        $error = "CSRF token validation failed";
-    } else {
-        $id = (int)$_GET['delete'];
-        try {
-            $stmt = $pdo->prepare("DELETE FROM application WHERE id = ?");
-            $stmt->execute([$id]);
-            $message = "Запись #$id успешно удалена";
-        } catch (PDOException $e) {
-            error_log('Delete error: ' . $e->getMessage());
-            $error = "Ошибка при удалении";
+// Удаление записи
+if (isset($_GET['delete'])) {
+    $id = getSafeInt($_GET['delete']);
+    $csrf_token = $_GET['csrf_token'] ?? '';
+    
+    if ($id > 0) {
+        if (verifyCsrfToken($csrf_token)) {
+            try {
+                // Сначала удаляем связанные записи
+                $pdo->prepare("DELETE FROM application_languages WHERE application_id = ?")->execute([$id]);
+                $pdo->prepare("DELETE FROM application_users WHERE application_id = ?")->execute([$id]);
+                $stmt = $pdo->prepare("DELETE FROM application WHERE id = ?");
+                $stmt->execute([$id]);
+                $message = "Запись #$id успешно удалена";
+            } catch (PDOException $e) {
+                $error = "Ошибка при удалении: " . $e->getMessage();
+            }
+        } else {
+            $error = "Ошибка безопасности: неверный CSRF-токен";
         }
     }
 }
 
-$applications = getAllApplications($pdo);
+// Получение параметров сортировки
+$sort = $_GET['sort'] ?? 'created_at';
+$order = $_GET['order'] ?? 'DESC';
+
+// Получение всех заявок
+$applications = getAllApplications($pdo, $sort, $order);
 $total_count = count($applications);
 $language_stats = getLanguageStats($pdo);
-$csrf_token = generateCsrfToken();
 ?>
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Панель администратора - Лабораторная 6</title>
+    <title>Панель администратора - Лабораторная 7</title>
     <style>
         * {
             margin: 0;
@@ -182,6 +279,15 @@ $csrf_token = generateCsrfToken();
             top: 0;
         }
         
+        th a {
+            color: #333;
+            text-decoration: none;
+        }
+        
+        th a:hover {
+            color: #667eea;
+        }
+        
         tr:hover {
             background: #f5f5f5;
         }
@@ -266,65 +372,93 @@ $csrf_token = generateCsrfToken();
     <div class="container">
         <div class="header">
             <h1>👑 Панель администратора</h1>
-            <div>Вы вошли как: <strong><?php echo h($_SERVER['PHP_AUTH_USER']); ?></strong></div>
+            <div class="admin-info">
+                Вы вошли как: <strong><?php echo escapeHtml($_SERVER['PHP_AUTH_USER']); ?></strong>
+                <a href="index.php" style="margin-left: 15px; color: #667eea;">Выйти</a>
+            </div>
         </div>
         
         <?php if ($message): ?>
-            <div class="message"><?php echo h($message); ?></div>
+            <div class="message"><?php echo escapeHtml($message); ?></div>
+        <?php endif; ?>
+        
+        <?php if ($error): ?>
+            <div class="error"><?php echo escapeHtml($error); ?></div>
         <?php endif; ?>
         
         <!-- Статистика -->
         <div class="stats-container">
-            <h2>📊 Статистика по языкам</h2>
+            <h2>📊 Статистика по языкам программирования</h2>
             <div class="stats-grid">
                 <?php foreach ($language_stats as $stat): ?>
                     <div class="stat-card">
-                        <div class="lang-name"><?php echo h($stat['name']); ?></div>
-                        <div class="lang-count"><?php echo $stat['count']; ?></div>
+                        <div class="lang-name"><?php echo escapeHtml($stat['name']); ?></div>
+                        <div class="lang-count"><?php echo escapeHtml($stat['count']); ?></div>
+                        <div style="font-size: 12px; opacity: 0.8;">пользователей</div>
                     </div>
                 <?php endforeach; ?>
                 <div class="stat-card total-card">
                     <div class="lang-name">📋 Всего</div>
-                    <div class="lang-count"><?php echo $total_count; ?></div>
+                    <div class="lang-count"><?php echo escapeHtml($total_count); ?></div>
+                    <div style="font-size: 12px; opacity: 0.8;">заявок</div>
                 </div>
             </div>
         </div>
         
-        <!-- Таблица -->
+        <!-- Таблица с данными -->
         <div class="table-container">
             <table>
                 <thead>
                     <tr>
-                        <th>ID</th><th>ФИО</th><th>Телефон</th><th>Email</th>
-                        <th>Дата рождения</th><th>Пол</th><th>Языки</th>
-                        <th>Дата создания</th><th>Действия</th>
+                        <th><a href="?sort=id&order=<?php echo $order === 'ASC' ? 'DESC' : 'ASC'; ?>">ID <?php echo $sort === 'id' ? ($order === 'ASC' ? '↑' : '↓') : ''; ?></a></th>
+                        <th><a href="?sort=full_name&order=<?php echo $order === 'ASC' ? 'DESC' : 'ASC'; ?>">ФИО <?php echo $sort === 'full_name' ? ($order === 'ASC' ? '↑' : '↓') : ''; ?></a></th>
+                        <th>Телефон</th>
+                        <th>Email</th>
+                        <th>Дата рождения</th>
+                        <th>Пол</th>
+                        <th>Языки программирования</th>
+                        <th><a href="?sort=created_at&order=<?php echo $order === 'ASC' ? 'DESC' : 'ASC'; ?>">Дата создания <?php echo $sort === 'created_at' ? ($order === 'ASC' ? '↑' : '↓') : ''; ?></a></th>
+                        <th>Действия</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($applications as $app): ?>
-                        <?php $user_langs = getUserLanguages($pdo, $app['id']); ?>
-                        <tr>
-                            <td><?php echo $app['id']; ?></td>
-                            <td><?php echo h($app['full_name']); ?></td>
-                            <td><?php echo h($app['phone']); ?></td>
-                            <td><?php echo h($app['email']); ?></td>
-                            <td><?php echo date('d.m.Y', strtotime($app['birth_date'])); ?></td>
-                            <td><?php echo ['male' => 'Мужской', 'female' => 'Женский'][$app['gender']]; ?></td>
-                            <td>
-                                <?php foreach ($user_langs as $lang): ?>
-                                    <span class="badge"><?php echo h($lang); ?></span>
-                                <?php endforeach; ?>
-                            </td>
-                            <td><?php echo date('d.m.Y H:i', strtotime($app['created_at'])); ?></td>
-                            <td>
-                                <a href="admin_edit.php?id=<?php echo $app['id']; ?>&csrf_token=<?php echo $csrf_token; ?>" class="btn btn-edit">✏️</a>
-                                <a href="?delete=<?php echo $app['id']; ?>&csrf_token=<?php echo $csrf_token; ?>" class="btn btn-delete" onclick="return confirm('Удалить?')">🗑️</a>
-                            </td>
+                    <?php if (empty($applications)): ?>
+                        <tr class="empty-row">
+                            <td colspan="9">Нет данных для отображения</td>
                         </tr>
-                    <?php endforeach; ?>
+                    <?php else: ?>
+                        <?php foreach ($applications as $app): ?>
+                            <?php $user_langs = getUserLanguages($pdo, $app['id']); ?>
+                            <tr>
+                                <td><?php echo escapeHtml($app['id']); ?></td>
+                                <td><?php echo escapeHtml($app['full_name']); ?></td>
+                                <td><?php echo escapeHtml($app['phone']); ?></td>
+                                <td><?php echo escapeHtml($app['email']); ?></td>
+                                <td><?php echo date('d.m.Y', strtotime($app['birth_date'])); ?></td>
+                                <td>
+                                    <?php 
+                                    $genders = ['male' => 'Мужской', 'female' => 'Женский'];
+                                    echo escapeHtml($genders[$app['gender']] ?? $app['gender']);
+                                    ?>
+                                </td>
+                                <td>
+                                    <?php foreach ($user_langs as $lang): ?>
+                                        <span class="badge"><?php echo escapeHtml($lang); ?></span>
+                                    <?php endforeach; ?>
+                                </td>
+                                <td><?php echo date('d.m.Y H:i', strtotime($app['created_at'])); ?></td>
+                                <td class="actions">
+                                    <a href="admin_edit.php?id=<?php echo escapeAttr($app['id']); ?>" class="btn btn-edit">✏️ Редактировать</a>
+                                    <a href="?delete=<?php echo escapeAttr($app['id']); ?>&csrf_token=<?php echo urlencode(generateCsrfToken()); ?>" class="btn btn-delete" onclick="return confirm('Удалить запись #<?php echo escapeJs($app['id']); ?>?')">🗑️ Удалить</a>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </tbody>
             </table>
         </div>
+        
+        <a href="index.php" class="back-link">← Вернуться на главную</a>
     </div>
 </body>
 </html>

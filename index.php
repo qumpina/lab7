@@ -1,19 +1,9 @@
 <?php
 // index.php
-session_start();
 require_once 'config.php';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Проверка CSRF токена
-    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
-        die('Ошибка безопасности. Пожалуйста, обновите страницу и попробуйте снова.');
-    }
-    
-    // Валидация и сохранение данных...
-}
-
-// Форма с CSRF токеном
-$csrf_token = generateCsrfToken();
+// Установка защитных заголовков
+setSecurityHeaders();
 
 // Функция для установки Cookie на год
 function setUserDataCookie($data) {
@@ -21,7 +11,7 @@ function setUserDataCookie($data) {
         if (is_array($value)) {
             $value = implode(',', $value);
         }
-        setcookie("user_$key", $value, time() + 365*24*60*60, '/');
+        setcookie("user_$key", $value, time() + 365*24*60*60, '/', '', false, true);
     }
 }
 
@@ -45,6 +35,7 @@ function getUserDataFromCookie() {
 function validateData($data) {
     $errors = [];
     $valid_data = [];
+    $allowedLanguages = getAllowedLanguages();
     
     // 1. ФИО
     $full_name = trim($data['full_name'] ?? '');
@@ -88,7 +79,7 @@ function validateData($data) {
     
     // 5. Пол
     $gender = $data['gender'] ?? '';
-    $valid_genders = ['male', 'female', 'other'];
+    $valid_genders = ['male', 'female'];
     if (empty($gender)) {
         $errors['gender'] = "Выберите пол";
     } elseif (!in_array($gender, $valid_genders)) {
@@ -97,15 +88,23 @@ function validateData($data) {
         $valid_data['gender'] = $gender;
     }
     
-    // 6. Языки программирования
+    // 6. Языки программирования (с белым списком)
     $languages = $data['languages'] ?? [];
-    $valid_languages = ['Pascal', 'C', 'C++', 'JavaScript', 'PHP', 'Python', 
-                       'Java', 'Haskell', 'Clojure', 'Prolog', 'Scala', 'Go'];
-    
     if (empty($languages)) {
         $errors['languages'] = "Выберите хотя бы один язык программирования";
     } else {
-        $valid_data['languages'] = $languages;
+        $validLanguages = [];
+        foreach ($languages as $langName) {
+            $validLang = validateLanguageName($langName, $allowedLanguages);
+            if ($validLang) {
+                $validLanguages[] = $validLang;
+            }
+        }
+        if (empty($validLanguages)) {
+            $errors['languages'] = "Выбраны недопустимые языки программирования";
+        } else {
+            $valid_data['languages'] = $validLanguages;
+        }
     }
     
     // 7. Биография
@@ -126,86 +125,92 @@ function validateData($data) {
 
 // Обработка POST запроса
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $result = validateData($_POST);
-    $errors = $result['errors'];
-    $valid_data = $result['valid_data'];
-    
-    if (empty($errors)) {
-        try {
-            $pdo->beginTransaction();
-            
-            // Вставка в БД
-            $stmt = $pdo->prepare("
-                INSERT INTO application (full_name, phone, email, birth_date, gender, biography, contract_accepted)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ");
-            
-            $stmt->execute([
-                $valid_data['full_name'],
-                $valid_data['phone'],
-                $valid_data['email'],
-                $valid_data['birth_date'],
-                $valid_data['gender'],
-                $valid_data['biography'] ?? '',
-                1
-            ]);
-            
-            $application_id = $pdo->lastInsertId();
-            
-            // Вставка языков
-            if (!empty($valid_data['languages'])) {
-                $lang_stmt = $pdo->prepare("
-                    INSERT INTO application_languages (application_id, language_id)
-                    VALUES (?, ?)
+    // Проверка CSRF-токена
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $errors['csrf'] = "Ошибка безопасности. Пожалуйста, обновите страницу.";
+    } else {
+        $result = validateData($_POST);
+        $errors = $result['errors'];
+        $valid_data = $result['valid_data'];
+        
+        if (empty($errors)) {
+            try {
+                $pdo->beginTransaction();
+                
+                // Вставка в БД
+                $stmt = $pdo->prepare("
+                    INSERT INTO application (full_name, phone, email, birth_date, gender, biography, contract_accepted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 ");
                 
-                foreach ($valid_data['languages'] as $lang_name) {
-                    $lang_id_stmt = $pdo->prepare("SELECT id FROM programming_languages WHERE name = ?");
-                    $lang_id_stmt->execute([$lang_name]);
-                    $lang_id = $lang_id_stmt->fetchColumn();
+                $stmt->execute([
+                    $valid_data['full_name'],
+                    $valid_data['phone'],
+                    $valid_data['email'],
+                    $valid_data['birth_date'],
+                    $valid_data['gender'],
+                    $valid_data['biography'] ?? '',
+                    1
+                ]);
+                
+                $application_id = $pdo->lastInsertId();
+                
+                // Вставка языков
+                if (!empty($valid_data['languages'])) {
+                    $lang_stmt = $pdo->prepare("
+                        INSERT INTO application_languages (application_id, language_id)
+                        VALUES (?, ?)
+                    ");
                     
-                    if ($lang_id) {
-                        $lang_stmt->execute([$application_id, $lang_id]);
+                    foreach ($valid_data['languages'] as $lang_name) {
+                        $lang_id_stmt = $pdo->prepare("SELECT id FROM programming_languages WHERE name = ?");
+                        $lang_id_stmt->execute([$lang_name]);
+                        $lang_id = $lang_id_stmt->fetchColumn();
+                        
+                        if ($lang_id) {
+                            $lang_stmt->execute([$application_id, $lang_id]);
+                        }
                     }
                 }
+                
+                // Генерация логина и пароля
+                $login = generateLogin($valid_data['full_name']);
+                $password = generatePassword();
+                $password_hash = password_hash($password, PASSWORD_DEFAULT);
+                
+                // Сохранение в таблицу пользователей
+                $user_stmt = $pdo->prepare("
+                    INSERT INTO application_users (application_id, login, password_hash)
+                    VALUES (?, ?, ?)
+                ");
+                $user_stmt->execute([$application_id, $login, $password_hash]);
+                
+                $pdo->commit();
+                
+                // Сохраняем данные в Cookies на год
+                setUserDataCookie($valid_data);
+                
+                $_SESSION['success'] = "Данные успешно сохранены!";
+                $_SESSION['generated_login'] = $login;
+                $_SESSION['generated_password'] = $password;
+                
+            } catch (PDOException $e) {
+                $pdo->rollBack();
+                showError("Ошибка при сохранении", $e->getMessage());
+                $errors['database'] = "Ошибка при сохранении данных";
             }
-            
-            // Генерация логина и пароля
-            $login = generateLogin($valid_data['full_name']);
-            $password = generatePassword();
-            $password_hash = password_hash($password, PASSWORD_DEFAULT);
-            
-            // Сохранение в таблицу пользователей
-            $user_stmt = $pdo->prepare("
-                INSERT INTO application_users (application_id, login, password_hash)
-                VALUES (?, ?, ?)
-            ");
-            $user_stmt->execute([$application_id, $login, $password_hash]);
-            
-            $pdo->commit();
-            
-            // Сохраняем данные в Cookies на год
-            setUserDataCookie($valid_data);
-            
-            $_SESSION['success'] = "Данные успешно сохранены!";
-            $_SESSION['generated_login'] = $login;
-            $_SESSION['generated_password'] = $password;
-            
-        } catch (PDOException $e) {
-            $pdo->rollBack();
-            $errors['database'] = "Ошибка при сохранении: " . $e->getMessage();
         }
     }
     
     // Если есть ошибки, сохраняем их в Cookies
     if (!empty($errors)) {
-        setcookie('form_errors', json_encode($errors), 0, '/');
+        setcookie('form_errors', json_encode($errors), 0, '/', '', false, true);
         foreach ($_POST as $key => $value) {
-            if ($key !== 'contract') {
+            if ($key !== 'contract' && $key !== 'csrf_token') {
                 if (is_array($value)) {
-                    setcookie("temp_$key", implode(',', $value), 0, '/');
+                    setcookie("temp_$key", implode(',', $value), 0, '/', '', false, true);
                 } else {
-                    setcookie("temp_$key", $value, 0, '/');
+                    setcookie("temp_$key", $value, 0, '/', '', false, true);
                 }
             }
         }
@@ -243,6 +248,8 @@ $success_message = $_SESSION['success'] ?? '';
 $generated_login = $_SESSION['generated_login'] ?? '';
 $generated_password = $_SESSION['generated_password'] ?? '';
 unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_password']);
+
+$languages_list = getAllowedLanguages();
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -257,7 +264,7 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
         <h2>Анкета</h2>
         <?php if (isset($_SESSION['user_login'])): ?>
             <div class="user-info">
-                Вы вошли как: <strong><?php echo htmlspecialchars($_SESSION['user_login']); ?></strong>
+                Вы вошли как: <strong><?php echo escapeHtml($_SESSION['user_login']); ?></strong>
                 <a href="edit.php" class="btn-link">Редактировать данные</a>
                 <a href="logout.php" class="btn-link">Выйти</a>
             </div>
@@ -270,12 +277,12 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
     
     <?php if ($success_message): ?>
         <div class="message success">
-            <?php echo htmlspecialchars($success_message); ?>
+            <?php echo escapeHtml($success_message); ?>
             <?php if ($generated_login): ?>
                 <div class="credentials">
                     <p><strong>Ваши данные для входа:</strong></p>
-                    <p>Логин: <code><?php echo htmlspecialchars($generated_login); ?></code></p>
-                    <p>Пароль: <code><?php echo htmlspecialchars($generated_password); ?></code></p>
+                    <p>Логин: <code><?php echo escapeHtml($generated_login); ?></code></p>
+                    <p>Пароль: <code><?php echo escapeHtml($generated_password); ?></code></p>
                     <p class="warning">Сохраните эти данные! Они понадобятся для редактирования анкеты.</p>
                 </div>
             <?php endif; ?>
@@ -283,20 +290,21 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
     <?php endif; ?>
     
     <form id="user-form" method="POST" action="index.php">
+        <?php echo csrfField(); ?>
+        
         <!-- ФИО -->
         <div class="form-group <?php echo isset($form_errors['full_name']) ? 'has-error' : ''; ?>">
-            <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
             <label for="fio" class="required">ФИО:</label>
             <input type="text" 
                    placeholder="Иванов Иван Иванович" 
                    id="fio" 
                    name="full_name" 
-                   value="<?php echo htmlspecialchars($form_data['full_name'] ?? ''); ?>"
+                   value="<?php echo escapeAttr($form_data['full_name'] ?? ''); ?>"
                    required 
                    maxlength="150">
             <div class="field-hint">Только русские и английские буквы, пробелы и дефисы. От 2 до 150 символов.</div>
             <?php if (isset($form_errors['full_name'])): ?>
-                <div class="error-message"><?php echo $form_errors['full_name']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['full_name']); ?></div>
             <?php endif; ?>
         </div>
 
@@ -307,11 +315,11 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
                    placeholder="+7 (938) 500-57-74" 
                    id="phone" 
                    name="phone" 
-                   value="<?php echo htmlspecialchars($form_data['phone'] ?? ''); ?>"
+                   value="<?php echo escapeAttr($form_data['phone'] ?? ''); ?>"
                    required>
             <div class="field-hint">Только цифры, символы +, - и пробелы. От 10 до 20 символов.</div>
             <?php if (isset($form_errors['phone'])): ?>
-                <div class="error-message"><?php echo $form_errors['phone']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['phone']); ?></div>
             <?php endif; ?>
         </div>
 
@@ -322,11 +330,11 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
                    placeholder="test@gmail.com" 
                    id="email" 
                    name="email" 
-                   value="<?php echo htmlspecialchars($form_data['email'] ?? ''); ?>"
+                   value="<?php echo escapeAttr($form_data['email'] ?? ''); ?>"
                    required>
             <div class="field-hint">Формат: имя@домен.ру</div>
             <?php if (isset($form_errors['email'])): ?>
-                <div class="error-message"><?php echo $form_errors['email']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['email']); ?></div>
             <?php endif; ?>
         </div>
 
@@ -336,11 +344,11 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
             <input type="date" 
                    id="birthdate" 
                    name="birth_date" 
-                   value="<?php echo htmlspecialchars($form_data['birth_date'] ?? ''); ?>"
+                   value="<?php echo escapeAttr($form_data['birth_date'] ?? ''); ?>"
                    required>
             <div class="field-hint">Формат: ГГГГ-ММ-ДД</div>
             <?php if (isset($form_errors['birth_date'])): ?>
-                <div class="error-message"><?php echo $form_errors['birth_date']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['birth_date']); ?></div>
             <?php endif; ?>
         </div>
 
@@ -368,7 +376,7 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
             </div>
             <div class="field-hint">Выберите один из вариантов</div>
             <?php if (isset($form_errors['gender'])): ?>
-                <div class="error-message"><?php echo $form_errors['gender']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['gender']); ?></div>
             <?php endif; ?>
         </div>
 
@@ -377,30 +385,28 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
             <label for="language" class="required">Любимые языки программирования:</label>
             <select id="language" name="languages[]" multiple size="6" required>
                 <?php
-                $languages_list = ['Pascal', 'C', 'C++', 'JavaScript', 'PHP', 'Python', 
-                                   'Java', 'Haskell', 'Clojure', 'Prolog', 'Scala', 'Go'];
                 $selected_langs = $form_data['languages'] ?? [];
                 foreach ($languages_list as $lang):
                 ?>
-                    <option value="<?php echo $lang; ?>" 
+                    <option value="<?php echo escapeAttr($lang); ?>" 
                         <?php echo in_array($lang, $selected_langs) ? 'selected' : ''; ?>>
-                        <?php echo $lang; ?>
+                        <?php echo escapeHtml($lang); ?>
                     </option>
                 <?php endforeach; ?>
             </select>
             <div class="field-hint">Выберите один или несколько языков. Удерживайте Ctrl (Cmd на Mac) для множественного выбора.</div>
             <?php if (isset($form_errors['languages'])): ?>
-                <div class="error-message"><?php echo $form_errors['languages']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['languages']); ?></div>
             <?php endif; ?>
         </div>
 
         <!-- Биография -->
         <div class="form-group <?php echo isset($form_errors['biography']) ? 'has-error' : ''; ?>">
             <label for="bio">Биография:</label>
-            <textarea id="bio" name="biography" rows="5" placeholder="Расскажите немного о себе..."><?php echo htmlspecialchars($form_data['biography'] ?? ''); ?></textarea>
+            <textarea id="bio" name="biography" rows="5" placeholder="Расскажите немного о себе..."><?php echo escapeHtml($form_data['biography'] ?? ''); ?></textarea>
             <div class="field-hint">Необязательное поле. Максимум 5000 символов.</div>
             <?php if (isset($form_errors['biography'])): ?>
-                <div class="error-message"><?php echo $form_errors['biography']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['biography']); ?></div>
             <?php endif; ?>
         </div>
 
@@ -412,7 +418,7 @@ unset($_SESSION['success'], $_SESSION['generated_login'], $_SESSION['generated_p
             </div>
             <div class="field-hint">Необходимо подтвердить ознакомление с условиями контракта</div>
             <?php if (isset($form_errors['contract'])): ?>
-                <div class="error-message"><?php echo $form_errors['contract']; ?></div>
+                <div class="error-message"><?php echo escapeHtml($form_errors['contract']); ?></div>
             <?php endif; ?>
         </div>
 

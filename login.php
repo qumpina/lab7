@@ -1,16 +1,76 @@
 <?php
 // login.php
-session_start();
 require_once 'config.php';
 
-$error = '';
+// Установка защитных заголовков
+setSecurityHeaders();
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+// Rate Limiter класс (встроен прямо в файл для простоты)
+class RateLimiter {
+    private $pdo;
+    private $maxAttempts = 5;
+    private $decayMinutes = 15;
+    
+    public function __construct($pdo) {
+        $this->pdo = $pdo;
+        $this->createTableIfNotExists();
+    }
+    
+    private function createTableIfNotExists() {
+        try {
+            $this->pdo->exec("
+                CREATE TABLE IF NOT EXISTS login_attempts (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    ip_address VARCHAR(45) NOT NULL,
+                    attempt_time DATETIME NOT NULL,
+                    INDEX idx_ip_time (ip_address, attempt_time)
+                )
+            ");
+        } catch (PDOException $e) {
+            // Таблица уже существует или ошибка - игнорируем
+        }
+    }
+    
+    public function checkLimit($ip) {
+        $stmt = $this->pdo->prepare("
+            SELECT COUNT(*) FROM login_attempts 
+            WHERE ip_address = ? AND attempt_time > DATE_SUB(NOW(), INTERVAL ? MINUTE)
+        ");
+        $stmt->execute([$ip, $this->decayMinutes]);
+        $attempts = $stmt->fetchColumn();
+        
+        return $attempts < $this->maxAttempts;
+    }
+    
+    public function recordAttempt($ip) {
+        $stmt = $this->pdo->prepare("
+            INSERT INTO login_attempts (ip_address, attempt_time) VALUES (?, NOW())
+        ");
+        $stmt->execute([$ip]);
+    }
+    
+    public function clearAttempts($ip) {
+        $stmt = $this->pdo->prepare("DELETE FROM login_attempts WHERE ip_address = ?");
+        $stmt->execute([$ip]);
+    }
+}
+
+$error = '';
+$rateLimiter = new RateLimiter($pdo);
+$clientIp = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+
+// Проверка лимита попыток
+if (!$rateLimiter->checkLimit($clientIp)) {
+    $error = "Слишком много неудачных попыток входа. Попробуйте через 15 минут.";
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
     $login = trim($_POST['login'] ?? '');
     $password = $_POST['password'] ?? '';
     
     if (empty($login) || empty($password)) {
         $error = "Введите логин и пароль";
+        $rateLimiter->recordAttempt($clientIp);
     } else {
         // Поиск пользователя в БД
         $stmt = $pdo->prepare("
@@ -24,7 +84,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $user = $stmt->fetch();
         
         if ($user && password_verify($password, $user['password_hash'])) {
-            // Успешный вход
+            // Успешный вход - очищаем попытки
+            $rateLimiter->clearAttempts($clientIp);
+            
+            // Регенерация ID сессии для защиты от фиксации сессии
+            session_regenerate_id(true);
+            
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['application_id'] = $user['application_id'];
             $_SESSION['user_login'] = $user['login'];
@@ -51,6 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         } else {
             $error = "Неверный логин или пароль";
+            $rateLimiter->recordAttempt($clientIp);
         }
     }
 }
@@ -94,10 +160,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <h2>Вход для редактирования</h2>
         
         <?php if ($error): ?>
-            <div class="error-message" style="margin-bottom: 20px;"><?php echo $error; ?></div>
+            <div class="error-message" style="margin-bottom: 20px;"><?php echo escapeHtml($error); ?></div>
         <?php endif; ?>
         
         <form method="POST" action="login.php" class="form-background">
+            <?php echo csrfField(); ?>
+            
             <div class="form-group">
                 <label for="login">Логин:</label>
                 <input type="text" id="login" name="login" required>

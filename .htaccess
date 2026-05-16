@@ -1,28 +1,30 @@
-# Отключение вывода ошибок
-php_flag display_errors off
-php_flag log_errors on
+# .htaccess - Исправленная версия (без DirectoryMatch)
 
-# Защита конфигурационных файлов
-<Files "config.php">
-    Order Deny,Allow
-    Deny from all
-</Files>
+<IfModule mod_headers.c>
+    Header unset X-Powered-By
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
 
-<Files "*.log">
-    Order Deny,Allow
-    Deny from all
-</Files>
-
-# Защита от directory listing
+# Запрет просмотра директорий
 Options -Indexes
 
-# Установка кодировки
-AddDefaultCharset UTF-8
+# Защита конфигурационных файлов
+<FilesMatch "\.(ini|log|sql|bak|config|env)$">
+    Require all denied
+</FilesMatch>
 
-# XSS защита через заголовки
-<IfModule mod_headers.c>
-    Header set X-XSS-Protection "1; mode=block"
-    Header set X-Content-Type-Options "nosniff"
-    Header set X-Frame-Options "DENY"
-    Header set Referrer-Policy "strict-origin-when-cross-origin"
+# Защита .htaccess файлов
+<FilesMatch "^\.ht">
+    Require all denied
+</FilesMatch>
+
+# Включение rewrite
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # Защита от directory traversal
+    RewriteCond %{QUERY_STRING} (\.\./|\.\.\\) [NC,OR]
+    RewriteCond %{QUERY_STRING} (boot\.ini|etc/passwd) [NC]
+    RewriteRule .* - [F,L]
 </IfModule>
